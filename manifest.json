@@ -1,7 +1,7 @@
 {
-  "name": "Devis Prototype 2",
-  "short_name": "Devis P2",
-  "start_url": "devis-prototype-2.html",
+  "name": "Devis Prototype 1",
+  "short_name": "DevisV1",
+  "start_url": "devis-prototype-1.html",
   "scope": "./",
   "display": "standalone",
   "background_color": "#ffffff",
