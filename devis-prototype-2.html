@@ -1,0 +1,401 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>MiniDevis — Prototype 2 (pièces dynamiques)</title>
+  <style>
+    :root { --bg:#f6f6f6; --card:#fff; --txt:#111; --muted:#666; --line:#e8e8e8; }
+    * { box-sizing:border-box; }
+    body { margin:0; font-family:Arial, Helvetica, sans-serif; color:var(--txt); background:var(--bg); }
+    header { position:sticky; top:0; z-index:10; background:#111; color:#fff; padding:10px 14px; font-weight:700; text-align:center; }
+    main { max-width:980px; margin:0 auto; padding:16px; }
+    h2 { margin:8px 0 12px; }
+    .row { display:flex; gap:8px; flex-wrap:wrap; }
+    .grid-2 { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; }
+    .grid-qty { display:grid; grid-template-columns:repeat(6,56px); gap:8px; }
+    .btn { padding:10px 14px; font-size:16px; background:#eee; border:1px solid #ccc; border-radius:8px; cursor:pointer; }
+    .btn.primary { background:#111; color:#fff; border-color:#000; }
+    .btn.back { background:#ddd; }
+    .btn.ghost { background:#fff; }
+    .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:14px; }
+    .muted { color:var(--muted); }
+    pre { white-space:pre-wrap; background:var(--card); border:1px solid var(--line); padding:12px; border-radius:10px; }
+    .small { font-size:12px; }
+  </style>
+</head>
+<body>
+<header>MiniDevis — Prototype 2 (pièces dynamiques)</header>
+<main id="app"></main>
+
+<script>
+/* ============================================
+   3.1 — CONSTANTES & DONNÉES
+   ============================================ */
+const REQUIRE_CODE = false;
+const ACCESS_CODE  = "AE-0825";
+
+// Pièces DYNAMIQUES (persistées dans le navigateur)
+let ROOMS = loadRooms();
+if (!Array.isArray(ROOMS) || !ROOMS.length) {
+  ROOMS = ["Cuisine","Chambre","Salon","Salle de bain"];
+  saveRooms();
+}
+
+const POSES = ["Encastré maçonnerie","Placo","Semi-encastré","Sur-mesure"];
+const DESIGNATIONS_PAR_CATEGORIE = {
+  "Prises": ["Prise"],
+  "Éclairage": ["Point de centre","Applique","Interrupteur simple","Interrupteur double"]
+};
+const TARIFS = {
+  "Prise": { creation:120, recablage_sans:50, recablage_avec:70, remplacement:20 },
+  "Point de centre": { creation:100, recablage_sans:50, recablage_avec:75, remplacement:30 },
+  "Applique": { creation:100, recablage_sans:50, recablage_avec:75, remplacement:30 },
+  "Interrupteur simple": { creation:40, recablage_sans:50, recablage_avec:75, remplacement:25 },
+  "Interrupteur double": { creation:60, recablage_sans:50, recablage_avec:85, remplacement:35 }
+};
+
+const IS_TERRA   = { complete_base:500, piquet_supp:100, part_conducteur_m:20, part_barrette:40, part_piquet_pack:120 };
+const IS_VENTIL  = { bouche_remplacement:40, bouche_creation:120, groupe_remplacement:200, pack_creation:900, bouche_supp:120, gaine_m:10, chapeau_125:180, alim_groupe:100, nettoyage:80 };
+const IS_TABLEAU = { circ_prises:180, circ_eclairage:150, circ_specialise:200, recablage_circuit:100, remplacement_protection:40, remplacement_tableau:800, tableau_secondaire:500, extension_tableau:250 };
+
+/* ============================================
+   3.2 — ÉTAT GLOBAL
+   ============================================ */
+let devis = {}; // { "Pièce" : { items:[{...}], note:"" }, ... }
+let ctx   = { piece:null, category:null, intervention:null, pose:null, designation:null };
+
+/* ============================================
+   3.3 — UTILITAIRES
+   ============================================ */
+const $app = () => document.getElementById('app');
+function view(html){ $app().innerHTML = html; }
+function b(label, fn, cls="btn"){ return `<button class="${cls}" onclick="${fn}">${label}</button>`; }
+function euro(n){ return `${(+n||0).toFixed(2)} €`; }
+function saveRooms(){ try{ localStorage.setItem('md_rooms', JSON.stringify(ROOMS)); }catch(e){} }
+function loadRooms(){ try{ return JSON.parse(localStorage.getItem('md_rooms')||'[]'); }catch(e){ return []; } }
+
+/* ============================================
+   3.4 — ACCUEIL & CODE D’ACCÈS
+   ============================================ */
+function pageHome(){
+  const btnRooms = ROOMS.length
+    ? ROOMS.map(p => b(p, `goPiece('${p.replace(/'/g,"\\'")}')`)).join('')
+    : '<span class="muted">Aucune pièce. Ajoute ta première pièce.</span>';
+
+  const isHtml = `
+    ${b("Mise à la terre","pageISTerre()")}
+    ${b("Ventilation","pageISVentil()")}
+    ${b("Distribution tableau","pageISTableau()")}
+  `;
+
+  view(`
+    <div class="card">
+      <h2>Pièces</h2>
+      <div class="row">
+        ${b("➕ Créer une pièce","addRoom()","btn primary")}
+        ${ROOMS.length ? b("✏️ Renommer","renameRoom()","btn") : ""}
+        ${ROOMS.length ? b("🗑️ Supprimer","deleteRoom()","btn") : ""}
+      </div>
+      <div class="grid-2" style="margin-top:12px;">${btnRooms}</div>
+      <div class="row" style="margin-top:12px;">
+        ${b("Voir totaux","pageTotaux()")}
+        ${b("Voir l’estimatif","pageEstimatif()")}
+      </div>
+      <p class="muted small">Astuce : ajoute <b>?v=p2b</b> à l’URL après mise à jour.</p>
+    </div>
+
+    <div class="card" style="margin-top:12px;">
+      <h2>Installations spécifiques</h2>
+      <div class="row">${isHtml}</div>
+    </div>
+  `);
+}
+function addRoom(){
+  const name = (prompt("Nom de la pièce :","") || "").trim();
+  if(!name) return;
+  if(ROOMS.includes(name)){ alert("Cette pièce existe déjà."); return; }
+  ROOMS.push(name); saveRooms(); pageHome();
+}
+function renameRoom(){
+  if(!ROOMS.length) return;
+  const from = prompt("Quel nom de pièce veux-tu renommer ?", ROOMS[0]) || "";
+  const idx = ROOMS.indexOf(from.trim());
+  if(idx<0) { alert("Pièce introuvable."); return; }
+  const to = (prompt(`Nouveau nom pour "${from}" :`, from) || "").trim();
+  if(!to) return;
+  ROOMS[idx] = to; saveRooms(); pageHome();
+}
+function deleteRoom(){
+  if(!ROOMS.length) return;
+  const name = prompt("Nom de la pièce à supprimer :", ROOMS[ROOMS.length-1]) || "";
+  const idx = ROOMS.indexOf(name.trim());
+  if(idx<0){ alert("Pièce introuvable."); return; }
+  if(!confirm(`Supprimer la pièce "${name}" ? (les lignes de cette pièce ne seront pas supprimées du devis)`)) return;
+  ROOMS.splice(idx,1); saveRooms(); pageHome();
+}
+
+function init(){
+  if(REQUIRE_CODE){
+    view(`
+      <div class="card">
+        <h2>Code d’accès</h2>
+        <input id="code" type="password" placeholder="Code">
+        <div class="row" style="margin-top:8px;">${b("Valider","checkCode()","btn primary")}</div>
+        <p id="code_err" class="muted"></p>
+      </div>
+    `);
+  } else {
+    pageHome();
+  }
+}
+function checkCode(){
+  const v = (document.getElementById('code').value||"").trim();
+  if(v===ACCESS_CODE) pageHome(); else document.getElementById('code_err').textContent = "Code incorrect.";
+}
+
+/* ============================================
+   3.5 — FLUX PIÈCES (commun à toutes)
+   ============================================ */
+function goPiece(piece){
+  ctx = { piece, category:null, intervention:null, pose:null, designation:null };
+  if(!devis[piece]) devis[piece] = { items:[], note:"" };
+  const cats = Object.keys(DESIGNATIONS_PAR_CATEGORIE)
+    .map(cat => b(cat, `goCategory('${cat}')`)).join('')
+    + b("Spécifique",`pageSpecifique()`,"btn ghost");
+  view(`
+    <div class="card">
+      ${b("Retour","pageHome()","btn back")}
+      <h2>${piece}</h2>
+      <div class="row">${cats}</div>
+      <div class="row" style="margin-top:12px;">${b("Ajouter / modifier la note",`editNote()`,"btn")}</div>
+    </div>
+  `);
+}
+function editNote(){
+  const cur = (devis[ctx.piece] && devis[ctx.piece].note) || "";
+  const n = prompt(`Note pour ${ctx.piece}`, cur);
+  if(n!==null) devis[ctx.piece].note = n.trim();
+  goPiece(ctx.piece);
+}
+function goCategory(cat){
+  ctx.category = cat;
+  const interv = (cat==="Prises")
+    ? ["Création","Remplacement appareillage","Recâblage avec remplacement appareillage","Recâblage sans remplacement appareillage"]
+    : ["Création","Remplacement luminaire","Recâblage avec remplacement appareillage","Recâblage sans remplacement appareillage"];
+  const buttons = interv.map(i=> b(i,`goIntervention('${i}')`)).join('');
+  view(`
+    <div class="card">
+      ${b("Retour",`goPiece('${ctx.piece}')`,"btn back")}
+      <h2>${ctx.category}</h2>
+      <div class="row">${buttons}</div>
+    </div>
+  `);
+}
+function goIntervention(interv){
+  ctx.intervention = interv;
+  if(interv==="Création"){
+    const posesBtns = POSES.map(p=> b(p,`goDesignation('${p}')`)).join('');
+    view(`
+      <div class="card">
+        ${b("Retour",`goCategory('${ctx.category}')`,"btn back")}
+        <h2>Type de pose</h2>
+        <div class="row">${posesBtns}</div>
+      </div>
+    `);
+  } else {
+    goDesignation(null);
+  }
+}
+function goDesignation(pose){
+  ctx.pose = pose;
+  const designations = DESIGNATIONS_PAR_CATEGORIE[ctx.category];
+  const buttons = designations.map(d=> b(d,`pageQuantite('${d}')`)).join('');
+  view(`
+    <div class="card">
+      ${b("Retour", ctx.intervention==="Création"
+        ? `goIntervention('${ctx.intervention}')`
+        : `goCategory('${ctx.category}')`,"btn back")}
+      <h2>Désignation</h2>
+      <div class="row">${buttons}</div>
+    </div>
+  `);
+}
+function pageQuantite(designation){
+  ctx.designation = designation;
+  const qtyBtns = Array.from({length:10},(_,i)=> b(i+1,`saveItem(${i+1})`)).join('');
+  view(`
+    <div class="card">
+      ${b("Retour",`goDesignation('${ctx.pose||""}')`,"btn back")}
+      <h2>Quantité</h2>
+      <div class="grid-qty">${qtyBtns}</div>
+    </div>
+  `);
+}
+function getPrix(designation, intervention){
+  const base = TARIFS[designation] || {};
+  if(intervention==="Création") return base.creation||0;
+  if(intervention.includes("sans remplacement")) return base.recablage_sans||0;
+  if(intervention.includes("avec remplacement")) return base.recablage_avec||0;
+  if(intervention.startsWith("Remplacement")) return base.remplacement||0;
+  return 0;
+}
+function saveItem(qty){
+  const sec = ctx.piece;
+  if(!devis[sec]) devis[sec] = { items:[], note:"" };
+  devis[sec].items.push({
+    category: ctx.category,
+    intervention: ctx.intervention,
+    pose: ctx.pose,
+    designation: ctx.designation,
+    qty: qty,
+    prixU: getPrix(ctx.designation, ctx.intervention)
+  });
+  pageHome();
+}
+function pageSpecifique(){
+  const label = prompt(`Nom de la prestation spécifique (pour ${ctx.piece}) :`,"");
+  if(!label) return goPiece(ctx.piece);
+  const prix = parseFloat(prompt("Prix estimé (€) :","0"))||0;
+  const sec = ctx.piece;
+  if(!devis[sec]) devis[sec] = { items:[], note:"" };
+  devis[sec].items.push({ category:"Spécifique", intervention:"", pose:"", designation:label, qty:1, prixU:prix });
+  pageHome();
+}
+
+/* ============================================
+   3.6 — INSTALLATIONS SPÉCIFIQUES
+   ============================================ */
+function addIS(section, label, prixU, qty=1, unit="u"){
+  if(!devis[section]) devis[section] = { items:[], note:"" };
+  devis[section].items.push({ category:"Installation spécifique", intervention:"", pose:"", designation:label, qty:qty, prixU:+prixU, unit:unit });
+  alert(`${label} ajouté (${qty} ${unit}, ${prixU}€/ ${unit})`);
+  pageHome();
+}
+// Terre
+function pageISTerre(){
+  view(`
+    <div class="card">
+      ${b("Retour","pageHome()","btn back")}
+      <h2>Mise à la terre</h2>
+      <div class="row">
+        ${b(`Complète (${euro(IS_TERRA.complete_base)})`,"terreComplete()")}
+        ${b(`Piquet supp. +2m câblette (${euro(IS_TERRA.piquet_supp)})`,"terrePiquetSupp()")}
+        ${b(`Partielle — Rempl. conducteur 16mm² (${euro(IS_TERRA.part_conducteur_m)}/m)`,"terreRemplacementConducteur()")}
+        ${b(`Partielle — Barrette coupure (${euro(IS_TERRA.part_barrette)})`,"terreBarrette()")}
+        ${b(`Partielle — Piquet pack (${euro(IS_TERRA.part_piquet_pack)})`,"terrePiquetPack()")}
+      </div>
+    </div>
+  `);
+}
+function terreComplete(){ addIS("Mise à la terre","Mise à la terre complète (conducteur 16mm² tableau→barrette, barrette, 4 piquets, 10m câblette 25mm²)", IS_TERRA.complete_base, 1, "u"); }
+function terrePiquetSupp(){ const q=parseInt(prompt("Nb de piquets supplémentaires (+2m câblette chacun) :","1")||"0",10); if(q>0) addIS("Mise à la terre","Piquet supplémentaire (+2m câblette)", IS_TERRA.piquet_supp, q, "u"); else pageISTerre(); }
+function terreRemplacementConducteur(){ const m=parseFloat(prompt("Longueur de conducteur 16mm² (m) :","1")||"0"); if(m>0) addIS("Mise à la terre","Remplacement conducteur principal 16mm²", IS_TERRA.part_conducteur_m, m, "m"); else pageISTerre(); }
+function terreBarrette(){ addIS("Mise à la terre","Pose d’une barrette de coupure", IS_TERRA.part_barrette, 1, "u"); }
+function terrePiquetPack(){ const q=parseInt(prompt("Nb de piquets pack (avec câblette) :","1")||"0",10); if(q>0) addIS("Mise à la terre","Piquet supplémentaire (pack avec câblette)", IS_TERRA.part_piquet_pack, q, "u"); else pageISTerre(); }
+// Ventilation
+function pageISVentil(){
+  view(`
+    <div class="card">
+      ${b("Retour","pageHome()","btn back")}
+      <h2>Ventilation</h2>
+      <div class="row">
+        ${b(`Remplacement bouche (${euro(IS_VENTIL.bouche_remplacement)})`,"ventilBoucheRempl()")}
+        ${b(`Création bouche (${euro(IS_VENTIL.bouche_creation)})`,"ventilBoucheCreation()")}
+        ${b(`Remplacement groupe VMC (${euro(IS_VENTIL.groupe_remplacement)})`,"ventilGroupeRempl()")}
+        ${b(`Pack création VMC (${euro(IS_VENTIL.pack_creation)})`,"ventilPackCreation()")}
+        ${b(`Bouche supplémentaire (${euro(IS_VENTIL.bouche_supp)})`,"ventilBoucheSupp()")}
+        ${b(`Gaine supplémentaire (${euro(IS_VENTIL.gaine_m)}/m)`,"ventilGaineM()")}
+        ${b(`Chapeau toiture Ø125 (${euro(IS_VENTIL.chapeau_125)})`,"ventilChapeau()")}
+        ${b(`Alimentation groupe (${euro(IS_VENTIL.alim_groupe)})`,"ventilAlim()")}
+        ${b(`Nettoyage / réglage (${euro(IS_VENTIL.nettoyage)})`,"ventilNettoyage()")}
+      </div>
+    </div>
+  `);
+}
+function ventilBoucheRempl(){ const q=parseInt(prompt("Nombre de bouches à remplacer :","1")||"0",10); if(q>0) addIS("Ventilation","Remplacement bouche d’extraction", IS_VENTIL.bouche_remplacement, q, "u"); else pageISVentil(); }
+function ventilBoucheCreation(){ const q=parseInt(prompt("Nombre de bouches à créer :","1")||"0",10); if(q>0) addIS("Ventilation","Création bouche d’extraction", IS_VENTIL.bouche_creation, q, "u"); else pageISVentil(); }
+function ventilGroupeRempl(){ addIS("Ventilation","Remplacement groupe VMC simple flux", IS_VENTIL.groupe_remplacement, 1, "u"); }
+function ventilPackCreation(){ addIS("Ventilation","Pack création VMC (groupe + 2 bouches + ~10m gaine + sortie murale)", IS_VENTIL.pack_creation, 1, "u"); }
+function ventilBoucheSupp(){ const q=parseInt(prompt("Nombre de bouches supplémentaires :","1")||"0",10); if(q>0) addIS("Ventilation","Bouche supplémentaire", IS_VENTIL.bouche_supp, q, "u"); else pageISVentil(); }
+function ventilGaineM(){ const m=parseFloat(prompt("Longueur de gaine (m) :","1")||"0"); if(m>0) addIS("Ventilation","Gaine supplémentaire Ø125", IS_VENTIL.gaine_m, m, "m"); else pageISVentil(); }
+function ventilChapeau(){ addIS("Ventilation","Pose chapeau de toiture Ø125", IS_VENTIL.chapeau_125, 1, "u"); }
+function ventilAlim(){ addIS("Ventilation","Alimentation électrique du groupe VMC", IS_VENTIL.alim_groupe, 1, "u"); }
+function ventilNettoyage(){ addIS("Ventilation","Nettoyage / réglage réseau VMC", IS_VENTIL.nettoyage, 1, "u"); }
+// Tableau
+function pageISTableau(){
+  view(`
+    <div class="card">
+      ${b("Retour","pageHome()","btn back")}
+      <h2>Distribution tableau</h2>
+      <div class="row">
+        ${b(`Création circuit prises (${euro(IS_TABLEAU.circ_prises)})`,"tabCircPrises()")}
+        ${b(`Création circuit éclairage (${euro(IS_TABLEAU.circ_eclairage)})`,"tabCircEclairage()")}
+        ${b(`Création circuit spécialisé (${euro(IS_TABLEAU.circ_specialise)})`,"tabCircSpecialise()")}
+        ${b(`Recâblage circuit (${euro(IS_TABLEAU.recablage_circuit)})`,"tabRecablage()")}
+        ${b(`Remplacement protection (${euro(IS_TABLEAU.remplacement_protection)})`,"tabRemplProtection()")}
+        ${b(`Remplacement tableau complet (${euro(IS_TABLEAU.remplacement_tableau)})`,"tabRemplTableau()")}
+        ${b(`Création tableau secondaire (${euro(IS_TABLEAU.tableau_secondaire)})`,"tabSecondaire()")}
+        ${b(`Extension tableau (${euro(IS_TABLEAU.extension_tableau)})`,"tabExtension()")}
+      </div>
+    </div>
+  `);
+}
+function tabCircPrises(){ const q=parseInt(prompt("Nb circuits prises à créer :","1")||"0",10); if(q>0) addIS("Distribution tableau","Création circuit prises", IS_TABLEAU.circ_prises, q, "u"); else pageISTableau(); }
+function tabCircEclairage(){ const q=parseInt(prompt("Nb circuits éclairage à créer :","1")||"0",10); if(q>0) addIS("Distribution tableau","Création circuit éclairage", IS_TABLEAU.circ_eclairage, q, "u"); else pageISTableau(); }
+function tabCircSpecialise(){ const q=parseInt(prompt("Nb circuits spécialisés à créer :","1")||"0",10); if(q>0) addIS("Distribution tableau","Création circuit spécialisé", IS_TABLEAU.circ_specialise, q, "u"); else pageISTableau(); }
+function tabRecablage(){ const q=parseInt(prompt("Nb de circuits à recâbler :","1")||"0",10); if(q>0) addIS("Distribution tableau","Recâblage de circuit", IS_TABLEAU.recablage_circuit, q, "u"); else pageISTableau(); }
+function tabRemplProtection(){ const q=parseInt(prompt("Nb de protections à remplacer (DJ / diff.) :","1")||"0",10); if(q>0) addIS("Distribution tableau","Remplacement de protection", IS_TABLEAU.remplacement_protection, q, "u"); else pageISTableau(); }
+function tabRemplTableau(){ addIS("Distribution tableau","Remplacement tableau complet (même emplacement / nb circuits)", IS_TABLEAU.remplacement_tableau, 1, "u"); }
+function tabSecondaire(){ addIS("Distribution tableau","Création d’un tableau secondaire", IS_TABLEAU.tableau_secondaire, 1, "u"); }
+function tabExtension(){ addIS("Distribution tableau","Extension de tableau (rangées / modules)", IS_TABLEAU.extension_tableau, 1, "u"); }
+
+/* ============================================
+   3.7 — ESTIMATIF & TOTAUX
+   ============================================ */
+function pageEstimatif(){
+  let html = `<div class="card">${b("Retour","pageHome()","btn back")}<h2>Estimatif détaillé</h2>`;
+  let totalGlobal = 0;
+  for (const section in devis) {
+    if (!devis[section] || devis[section].items.length === 0) continue;
+    let sectionTotal = 0;
+    html += `<h3><strong>${section}</strong></h3><ul>`;
+    devis[section].items.forEach(item => {
+      const prixTotal = (item.prixU||0) * (item.qty||0);
+      sectionTotal += prixTotal;
+      const poseTxt = (item.intervention==="Création" && item.pose) ? ` ${item.pose.toLowerCase()}` : "";
+      let intervLabel = item.intervention || "";
+      if(item.designation==="Interrupteur simple" && item.intervention && item.intervention.startsWith("Remplacement")) intervLabel = "Remplacement interrupteur simple";
+      if(item.designation==="Interrupteur double" && item.intervention && item.intervention.startsWith("Remplacement")) intervLabel = "Remplacement interrupteur double";
+      const left = item.intervention ? `${intervLabel} — ` : "";
+      const unitTxt = item.unit ? item.unit : "u";
+      html += `<li>${left}${item.designation}${poseTxt} (${item.qty} ${unitTxt} × ${euro(item.prixU)} = ${euro(prixTotal)})</li>`;
+    });
+    if (devis[section].note) html += `<li><em>Note : ${devis[section].note}</em></li>`;
+    html += `</ul><p><strong>Total ${section} : ${euro(sectionTotal)}</strong></p><hr>`;
+    totalGlobal += sectionTotal;
+  }
+  html += `<h3>Total global : ${euro(totalGlobal)}</h3></div>`;
+  view(html);
+}
+function pageTotaux(){
+  let html = `<div class="card">${b("Retour","pageHome()","btn back")}<h2>Totaux par section</h2>`;
+  let totalGlobal = 0;
+  for (const section in devis) {
+    if (!devis[section] || devis[section].items.length === 0) continue;
+    const sectionTotal = devis[section].items.reduce((sum, it) => sum + ((it.prixU||0) * (it.qty||0)), 0);
+    totalGlobal += sectionTotal;
+    html += `<p><strong>${section}</strong> : ${euro(sectionTotal)}</p>`;
+  }
+  html += `<hr><p><strong>Total global : ${euro(totalGlobal)}</strong></p></div>`;
+  view(html);
+}
+
+/* ============================================
+   3.8 — DÉMARRAGE
+   ============================================ */
+init();
+</script>
+</main>
+</body>
+</html>
